@@ -8,4 +8,7 @@ pub mod query;
 pub mod retrieval;
 pub mod storage;
 
+#[cfg(test)]
+mod tests;
+
 pub use error::{RagError, Result};

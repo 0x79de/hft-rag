@@ -25,11 +25,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting HFT-RAG system...");
 
     // Load configuration
-    let config = RagConfig::default();
+    let config = RagConfig::from_env()?;
     
     // Initialize components
     let embedding_service = Arc::new(CandleEmbedding::new().await?);
-    let storage = Arc::new(QdrantStorage::new(&config.storage.qdrant_url, None).await?);
+    let storage = Arc::new(QdrantStorage::new(&config.storage.qdrant_url, config.storage.qdrant_api_key.as_deref()).await?);
     let query_processor = Arc::new(QueryProcessor::new());
     
     let retrieval_config = RetrievalConfig {
@@ -63,6 +63,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_state = AppState {
         query_processor,
         retrieval_pipeline,
+        storage,
+        embedding_service,
     };
     
     let app = create_router(app_state);

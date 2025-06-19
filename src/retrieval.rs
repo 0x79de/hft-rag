@@ -9,7 +9,7 @@ use crate::embedding::EmbeddingService;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalContext {
-    pub documents: Vec<Document>,
+    pub results: Vec<SearchResult>,
     pub total_score: f32,
     pub query_metadata: serde_json::Value,
 }
@@ -106,10 +106,8 @@ impl MultiStageRetrieval {
         };
         
         let results = self.storage.search(search_query).await?;
-        let documents = results.into_iter().map(|r| r.document).collect();
-        
         Ok(RetrievalContext {
-            documents,
+            results,
             total_score: 1.0, // Full context always gets max score
             query_metadata: serde_json::json!({
                 "mode": "full_context",
@@ -151,10 +149,8 @@ impl MultiStageRetrieval {
         };
         
         let results = self.storage.search(search_query).await?;
-        let documents = results.into_iter().map(|r| r.document).collect();
-        
         Ok(RetrievalContext {
-            documents,
+            results,
             total_score: 0.8, // Slightly lower score for simplified mode
             query_metadata: serde_json::json!({
                 "mode": "simplified",
@@ -313,7 +309,7 @@ impl MultiStageRetrieval {
             if total_length + content_length <= self.config.max_context_length {
                 total_length += content_length;
                 total_score += result.score;
-                selected_documents.push(result.document);
+                selected_documents.push(result);
             } else {
                 break;
             }
@@ -321,7 +317,7 @@ impl MultiStageRetrieval {
 
         let num_docs = selected_documents.len();
         RetrievalContext {
-            documents: selected_documents,
+            results: selected_documents,
             total_score: total_score / num_docs as f32,
             query_metadata: serde_json::json!({
                 "total_documents": num_docs,
@@ -340,7 +336,7 @@ impl RetrievalPipeline for MultiStageRetrieval {
         
         if initial_results.is_empty() {
             return Ok(RetrievalContext {
-                documents: vec![],
+                results: vec![],
                 total_score: 0.0,
                 query_metadata: serde_json::json!({
                     "message": "No documents found matching the query",

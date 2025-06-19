@@ -2,6 +2,12 @@
 name = "hft-rag"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "High-Frequency Trading RAG System for market data analysis and strategy augmentation"
+homepage = "https://github.com/hft-rag/hft-rag"
+repository = "https://github.com/hft-rag/hft-rag"
+keywords = ["hft", "rag", "trading", "finance", "vector-search"]
+categories = ["algorithms", "database", "finance"]
 
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
@@ -33,3 +39,8 @@ regex = "1.10"
 lru = "0.12"
 futures = "0.3"
 dashmap = "5.5"
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio-test = "0.4"

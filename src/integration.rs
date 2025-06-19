@@ -168,7 +168,7 @@ impl HftIntegration for McpBridge {
                         Err(e) => Ok(HftResponse {
                             request_id: request.request_id.clone(),
                             context: RetrievalContext {
-                                documents: vec![],
+                                results: vec![],
                                 total_score: 0.0,
                                 query_metadata: serde_json::json!({"error": e.to_string()}),
                             },
@@ -181,7 +181,7 @@ impl HftIntegration for McpBridge {
                     Ok(HftResponse {
                         request_id: request.request_id,
                         context: RetrievalContext {
-                            documents: vec![],
+                            results: vec![],
                             total_score: 0.0,
                             query_metadata: serde_json::json!({"error": "Request timeout"}),
                         },
