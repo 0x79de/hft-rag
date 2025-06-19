@@ -237,6 +237,12 @@ pub struct IngestionPipeline {
     chunk_overlap: usize,
 }
 
+impl Default for IngestionPipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IngestionPipeline {
     pub fn new() -> Self {
         Self {

@@ -328,7 +328,7 @@ impl FallbackEmbedding {
             }
         };
         
-        let openai = openai_api_key.map(|key| OpenAIEmbedding::new(key));
+        let openai = openai_api_key.map(OpenAIEmbedding::new);
         
         let preferred_dimension = candle.as_ref().map(|c| c.dimension()).unwrap_or(1536);
         

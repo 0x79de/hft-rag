@@ -50,6 +50,12 @@ pub struct QueryProcessor {
     financial_terms: HashMap<String, Vec<String>>,
 }
 
+impl Default for QueryProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QueryProcessor {
     pub fn new() -> Self {
         let mut financial_terms = HashMap::new();

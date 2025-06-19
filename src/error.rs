@@ -48,4 +48,16 @@ pub enum RagError {
 
     #[error("Tokenizer error: {0}")]
     Tokenizer(String),
+
+    #[error("Qdrant client error: {0}")]
+    Qdrant(#[from] anyhow::Error),
+    
+    #[error("Qdrant error: {0}")]
+    QdrantClient(Box<qdrant_client::QdrantError>),
+}
+
+impl From<qdrant_client::QdrantError> for RagError {
+    fn from(err: qdrant_client::QdrantError) -> Self {
+        RagError::QdrantClient(Box::new(err))
+    }
 }
