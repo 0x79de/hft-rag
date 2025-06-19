@@ -1,16 +1,20 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
+    middleware,
     response::Json,
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, error};
+use uuid::Uuid;
 use crate::query::{Query, QueryProcessor};
 use crate::retrieval::RetrievalPipeline;
+use crate::storage::{Document, VectorStorage};
+use crate::embedding::EmbeddingService;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthResponse {
@@ -54,13 +58,38 @@ pub struct ErrorResponse {
 pub struct AppState {
     pub query_processor: Arc<QueryProcessor>,
     pub retrieval_pipeline: Arc<dyn RetrievalPipeline>,
+    pub storage: Arc<dyn VectorStorage>,
+    pub embedding_service: Arc<dyn EmbeddingService>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DocumentRequest {
+    pub content: String,
+    pub metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DocumentCreateResponse {
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BatchDocumentRequest {
+    pub documents: Vec<DocumentRequest>,
 }
 
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_check))
-        .route("/query", post(query_documents))
         .route("/status", get(system_status))
+        .route("/query", post(query_documents))
+        .route("/documents", post(create_document))
+        .route("/documents/batch", post(create_documents_batch))
+        .route("/documents/:id", get(get_document))
+        .route("/documents/:id", put(update_document))
+        .route("/documents/:id", delete(delete_document))
+        .layer(middleware::from_fn(logging_middleware))
         .with_state(Arc::new(state))
 }
 
@@ -130,14 +159,14 @@ async fn query_documents(
 
     // Convert to response format
     let documents: Vec<DocumentResponse> = retrieval_context
-        .documents
+        .results
         .into_iter()
-        .map(|doc| DocumentResponse {
-            id: doc.id.to_string(),
-            content: doc.content,
-            metadata: doc.metadata,
-            score: 0.0, // TODO: Add score from retrieval
-            timestamp: doc.timestamp,
+        .map(|result| DocumentResponse {
+            id: result.document.id.to_string(),
+            content: result.document.content,
+            metadata: result.document.metadata,
+            score: result.score,
+            timestamp: result.document.timestamp,
         })
         .collect();
 
@@ -190,4 +219,266 @@ pub async fn logging_middleware(
     );
 
     response
+}
+
+async fn create_document(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<DocumentRequest>,
+) -> std::result::Result<Json<DocumentCreateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let id = Uuid::new_v4();
+    
+    // Generate embedding for the document
+    let embedding = match state.embedding_service.embed_text(&request.content).await {
+        Ok(emb) => emb,
+        Err(e) => {
+            error!("Failed to generate embedding: {}", e);
+            return Err(create_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Embedding generation failed",
+                &e.to_string(),
+            ));
+        }
+    };
+    
+    let document = Document {
+        id,
+        content: request.content,
+        metadata: request.metadata.unwrap_or_default(),
+        embedding,
+        timestamp: chrono::Utc::now(),
+    };
+    
+    if let Err(e) = state.storage.insert_document(document).await {
+        error!("Failed to store document: {}", e);
+        return Err(create_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Document storage failed",
+            &e.to_string(),
+        ));
+    }
+    
+    info!("Document created with ID: {}", id);
+    Ok(Json(DocumentCreateResponse {
+        id: id.to_string(),
+        status: "created".to_string(),
+    }))
+}
+
+async fn create_documents_batch(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<BatchDocumentRequest>,
+) -> std::result::Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    if request.documents.is_empty() {
+        return Err(create_error_response(
+            StatusCode::BAD_REQUEST,
+            "Empty batch",
+            "Batch request must contain at least one document",
+        ));
+    }
+    
+    let mut documents = Vec::new();
+    let mut created_ids = Vec::new();
+    
+    for doc_request in request.documents {
+        let id = Uuid::new_v4();
+        created_ids.push(id.to_string());
+        
+        // Generate embedding for each document
+        let embedding = match state.embedding_service.embed_text(&doc_request.content).await {
+            Ok(emb) => emb,
+            Err(e) => {
+                error!("Failed to generate embedding for document: {}", e);
+                return Err(create_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Batch embedding generation failed",
+                    &e.to_string(),
+                ));
+            }
+        };
+        
+        let document = Document {
+            id,
+            content: doc_request.content,
+            metadata: doc_request.metadata.unwrap_or_default(),
+            embedding,
+            timestamp: chrono::Utc::now(),
+        };
+        
+        documents.push(document);
+    }
+    
+    if let Err(e) = state.storage.insert_batch(documents).await {
+        error!("Failed to store document batch: {}", e);
+        return Err(create_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Batch storage failed",
+            &e.to_string(),
+        ));
+    }
+    
+    info!("Batch of {} documents created", created_ids.len());
+    Ok(Json(serde_json::json!({
+        "status": "created",
+        "count": created_ids.len(),
+        "ids": created_ids
+    })))
+}
+
+async fn get_document(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> std::result::Result<Json<DocumentResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return Err(create_error_response(
+                StatusCode::BAD_REQUEST,
+                "Invalid ID format",
+                "Document ID must be a valid UUID",
+            ));
+        }
+    };
+    
+    match state.storage.get_document(uuid).await {
+        Ok(Some(document)) => {
+            Ok(Json(DocumentResponse {
+                id: document.id.to_string(),
+                content: document.content,
+                metadata: document.metadata,
+                score: 1.0, // Not applicable for direct retrieval
+                timestamp: document.timestamp,
+            }))
+        }
+        Ok(None) => {
+            Err(create_error_response(
+                StatusCode::NOT_FOUND,
+                "Document not found",
+                "No document found with the specified ID",
+            ))
+        }
+        Err(e) => {
+            error!("Failed to retrieve document: {}", e);
+            Err(create_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Document retrieval failed",
+                &e.to_string(),
+            ))
+        }
+    }
+}
+
+async fn update_document(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<DocumentRequest>,
+) -> std::result::Result<Json<DocumentCreateResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return Err(create_error_response(
+                StatusCode::BAD_REQUEST,
+                "Invalid ID format",
+                "Document ID must be a valid UUID",
+            ));
+        }
+    };
+    
+    // Check if document exists
+    if state.storage.get_document(uuid).await.map_err(|e| {
+        error!("Failed to check document existence: {}", e);
+        create_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database error",
+            &e.to_string(),
+        )
+    })?.is_none() {
+        return Err(create_error_response(
+            StatusCode::NOT_FOUND,
+            "Document not found",
+            "No document found with the specified ID",
+        ));
+    }
+    
+    // Generate new embedding for updated content
+    let embedding = match state.embedding_service.embed_text(&request.content).await {
+        Ok(emb) => emb,
+        Err(e) => {
+            error!("Failed to generate embedding: {}", e);
+            return Err(create_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Embedding generation failed",
+                &e.to_string(),
+            ));
+        }
+    };
+    
+    let updated_document = Document {
+        id: uuid,
+        content: request.content,
+        metadata: request.metadata.unwrap_or_default(),
+        embedding,
+        timestamp: chrono::Utc::now(),
+    };
+    
+    if let Err(e) = state.storage.insert_document(updated_document).await {
+        error!("Failed to update document: {}", e);
+        return Err(create_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Document update failed",
+            &e.to_string(),
+        ));
+    }
+    
+    info!("Document updated with ID: {}", uuid);
+    Ok(Json(DocumentCreateResponse {
+        id: uuid.to_string(),
+        status: "updated".to_string(),
+    }))
+}
+
+async fn delete_document(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> std::result::Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let uuid = match Uuid::parse_str(&id) {
+        Ok(uuid) => uuid,
+        Err(_) => {
+            return Err(create_error_response(
+                StatusCode::BAD_REQUEST,
+                "Invalid ID format",
+                "Document ID must be a valid UUID",
+            ));
+        }
+    };
+    
+    // Check if document exists
+    if state.storage.get_document(uuid).await.map_err(|e| {
+        error!("Failed to check document existence: {}", e);
+        create_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database error",
+            &e.to_string(),
+        )
+    })?.is_none() {
+        return Err(create_error_response(
+            StatusCode::NOT_FOUND,
+            "Document not found",
+            "No document found with the specified ID",
+        ));
+    }
+    
+    if let Err(e) = state.storage.delete_document(uuid).await {
+        error!("Failed to delete document: {}", e);
+        return Err(create_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Document deletion failed",
+            &e.to_string(),
+        ));
+    }
+    
+    info!("Document deleted with ID: {}", uuid);
+    Ok(Json(serde_json::json!({
+        "status": "deleted",
+        "id": uuid.to_string()
+    })))
 }
