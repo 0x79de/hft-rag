@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod tests {
+mod unit_tests {
 
     mod query_tests {
         use crate::query::{QueryProcessor, Query, QueryIntent};
@@ -51,8 +51,8 @@ mod tests {
             
             let result = processor.process_query(query).await.unwrap();
             assert!(result.market_filters.len() >= 2);
-            assert!(result.market_filters.iter().any(|f| f.symbol.as_ref().map_or(false, |s| s == "AAPL")));
-            assert!(result.market_filters.iter().any(|f| f.symbol.as_ref().map_or(false, |s| s == "MSFT")));
+            assert!(result.market_filters.iter().any(|f| f.symbol.as_ref().is_some_and(|s| s == "AAPL")));
+            assert!(result.market_filters.iter().any(|f| f.symbol.as_ref().is_some_and(|s| s == "MSFT")));
         }
     }
 
@@ -166,7 +166,7 @@ mod tests {
             let _pipeline_custom = IngestionPipeline::with_chunk_config(1024, 128);
             
             // Just test that they can be created successfully
-            assert!(true);
+            // Test passes if no panic occurs during validation
         }
     }
 
@@ -212,7 +212,7 @@ mod tests {
         #[test]
         fn test_request_type_variants() {
             // Test that all variants exist and can be matched
-            let variants = vec![
+            let variants = [
                 HftRequestType::StrategyAugmentation,
                 HftRequestType::RiskAssessment,
                 HftRequestType::MarketAnalysis,
