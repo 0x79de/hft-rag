@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize components
     let embedding_service = Arc::new(CandleEmbedding::new().await?);
     let storage = Arc::new(QdrantStorage::new(&config.storage.qdrant_url, config.storage.qdrant_api_key.as_deref()).await?);
-    let query_processor = Arc::new(QueryProcessor::new());
+    let query_processor = Arc::new(QueryProcessor::new().with_embedding_service(embedding_service.clone()));
     
     let retrieval_config = RetrievalConfig {
         top_k: config.retrieval.top_k,

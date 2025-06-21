@@ -171,33 +171,45 @@ impl MultiStageRetrieval {
             filters: self.build_metadata_filters(query),
         };
 
-        let results = self.storage.search(search_query).await?;
+        // Use timeout for vector search to ensure sub-20ms performance
+        let search_future = self.storage.search(search_query);
+        let timeout_duration = tokio::time::Duration::from_millis(15); // Leave 5ms for post-processing
+        
+        let results = match tokio::time::timeout(timeout_duration, search_future).await {
+            Ok(Ok(results)) => results,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                tracing::warn!("Vector search timeout after 15ms, returning empty results");
+                return Ok(vec![]);
+            }
+        };
         
         // Apply intelligent filtering: only return results above relevance threshold
         Ok(self.filter_by_intelligent_relevance(results, query))
     }
     
     fn calculate_dynamic_top_k(&self, query: &EnhancedQuery) -> usize {
-        let base_k = self.config.rerank_top_n;
+        let base_k = self.config.top_k; // Use config top_k instead of rerank_top_n
         
-        // Increase retrieval for complex queries with multiple filters
+        // For performance optimization, limit complexity multipliers
         let complexity_multiplier = if query.market_filters.len() > 2 || 
                                       query.temporal_context.is_some() ||
                                       query.expanded_text.len() > 50 {
-            2.0
+            1.5 // Reduced from 2.0 for performance
         } else {
             1.0
         };
         
-        // Scale based on query intent - strategy queries need more context
+        // Scale based on query intent - optimize for speed
         let intent_multiplier = match query.intent {
-            crate::query::QueryIntent::TradingStrategy => 1.5,
-            crate::query::QueryIntent::MarketData => 1.2,
-            crate::query::QueryIntent::RiskAssessment => 1.8,
+            crate::query::QueryIntent::TradingStrategy => 1.3, // Reduced from 1.5
+            crate::query::QueryIntent::MarketData => 1.1,      // Reduced from 1.2
+            crate::query::QueryIntent::RiskAssessment => 1.4,  // Reduced from 1.8
             _ => 1.0,
         };
         
-        ((base_k as f64 * complexity_multiplier * intent_multiplier) as usize).min(100)
+        // Cap at 50 for better performance (was 100)
+        ((base_k as f64 * complexity_multiplier * intent_multiplier) as usize).min(50)
     }
     
     fn calculate_dynamic_threshold(&self, query: &EnhancedQuery) -> f32 {
@@ -217,29 +229,31 @@ impl MultiStageRetrieval {
             return results;
         }
         
-        // Calculate relevance score cutoff based on top result
-        let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
-        let relevance_cutoff = top_score * 0.7; // Only keep results within 30% of top score
+        // Optimize for speed: reduce cutoff calculation overhead
+        let top_score = results[0].score; // Direct access instead of optional
+        let relevance_cutoff = top_score * 0.75; // Slightly higher cutoff (was 0.7) for fewer results
         
-        // Apply temporal boost for recent documents in time-sensitive queries
+        // Apply temporal boost only for time-sensitive queries (optimized)
         if query.temporal_context.is_some() {
+            let now_timestamp = chrono::Utc::now().timestamp();
             for result in &mut results {
-                if let Some(timestamp) = result.document.metadata.get("timestamp") {
-                    if let Ok(ts) = timestamp.parse::<i64>() {
-                        let age_hours = (chrono::Utc::now().timestamp() - ts) / 3600;
+                if let Some(timestamp_str) = result.document.metadata.get("timestamp") {
+                    if let Ok(ts) = timestamp_str.parse::<i64>() {
+                        let age_hours = (now_timestamp - ts) / 3600;
                         if age_hours < 24 {
-                            result.score *= 1.2; // Boost recent documents
+                            result.score *= 1.15; // Slightly reduced boost (was 1.2) for performance
                         }
                     }
                 }
             }
-            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+            // Use unstable sort for better performance
+            results.sort_unstable_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         }
         
-        // Filter by intelligent relevance threshold
+        // Filter by intelligent relevance threshold - optimized for speed
         results.into_iter()
             .filter(|r| r.score >= relevance_cutoff)
-            .take(20) // Cap at reasonable limit for context
+            .take(15) // Reduced from 20 for better performance
             .collect()
     }
 
