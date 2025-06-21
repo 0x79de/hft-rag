@@ -230,7 +230,7 @@ impl MultiStageRetrieval {
         }
         
         // Optimize for speed: reduce cutoff calculation overhead
-        let top_score = results[0].score; // Direct access instead of optional
+        let top_score = results.first().map(|r| r.score).unwrap_or(0.0); // Safe access using `first()`
         let relevance_cutoff = top_score * 0.75; // Slightly higher cutoff (was 0.7) for fewer results
         
         // Apply temporal boost only for time-sensitive queries (optimized)
