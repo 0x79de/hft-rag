@@ -143,11 +143,14 @@ impl QdrantStorage {
         }
         
         // Extract embedding from vectors
-        let embedding = match &point.vectors.as_ref()?.vectors_options {
+        let embedding = match &point.vectors.as_ref().and_then(|v| v.vectors_options.as_ref()) {
             Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(vector)) => {
                 vector.data.clone()
             },
-            _ => return None,
+            _ => {
+                tracing::warn!("Missing or invalid vector data for document {}", id);
+                return None;
+            }
         };
         
         Some(Document {
@@ -184,11 +187,14 @@ impl QdrantStorage {
         }
         
         // Extract embedding from vectors
-        let embedding = match &point.vectors.as_ref()?.vectors_options {
+        let embedding = match &point.vectors.as_ref().and_then(|v| v.vectors_options.as_ref()) {
             Some(qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(vector)) => {
                 vector.data.clone()
             },
-            _ => return None,
+            _ => {
+                tracing::warn!("Missing or invalid vector data for document {}", id);
+                return None;
+            }
         };
         
         Some(Document {

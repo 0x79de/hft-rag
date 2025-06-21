@@ -45,8 +45,11 @@ impl CandleEmbedding {
         let config_content = std::fs::read_to_string(config_path)?;
         let config: Config = serde_json::from_str(&config_content)?;
         
-        // Download model weights
-        let weights_path = repo.get("pytorch_model.bin").await?;
+        // Download model weights - try safetensors first, fallback to pytorch
+        let weights_path = match repo.get("model.safetensors").await {
+            Ok(path) => path,
+            Err(_) => repo.get("pytorch_model.bin").await?,
+        };
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], candle_core::DType::F32, &device)? };
         
         // Load model
@@ -61,9 +64,9 @@ impl CandleEmbedding {
         })
     }
     
-    pub fn new_with_cache_size(_cache_size: usize) -> Result<Self> {
+    pub async fn new_with_cache_size(_cache_size: usize) -> Result<Self> {
         // For cases where we want to limit cache size
-        let embedding = tokio::runtime::Runtime::new()?.block_on(Self::new())?;
+        let embedding = Self::new().await?;
         // Note: DashMap doesn't have built-in size limits, but we could implement LRU
         Ok(embedding)
     }
@@ -135,11 +138,9 @@ impl EmbeddingService for CandleEmbedding {
         }
         
         // Compute embeddings for uncached texts in parallel
-        let mut uncached_results = Vec::new();
-        for text in uncached_texts {
-            let embedding = self.compute_embedding(text).await?;
-            uncached_results.push(embedding);
-        }
+        let uncached_results = futures::future::try_join_all(
+            uncached_texts.into_iter().map(|text| self.compute_embedding(text))
+        ).await?;
         
         // Fill in the uncached results and update cache
         let mut uncached_idx = 0;

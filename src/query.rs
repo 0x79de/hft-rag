@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::Result;
+use crate::{Result, embedding::EmbeddingService};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Query {
@@ -48,6 +49,7 @@ pub struct MarketFilter {
 
 pub struct QueryProcessor {
     financial_terms: HashMap<String, Vec<String>>,
+    embedding_service: Option<Arc<dyn EmbeddingService>>,
 }
 
 impl Default for QueryProcessor {
@@ -67,7 +69,15 @@ impl QueryProcessor {
         financial_terms.insert("rsi".to_string(), vec!["relative strength index".to_string()]);
         financial_terms.insert("macd".to_string(), vec!["moving average convergence divergence".to_string()]);
         
-        Self { financial_terms }
+        Self { 
+            financial_terms,
+            embedding_service: None,
+        }
+    }
+
+    pub fn with_embedding_service(mut self, embedding_service: Arc<dyn EmbeddingService>) -> Self {
+        self.embedding_service = Some(embedding_service);
+        self
     }
 
     pub async fn process_query(&self, query: Query) -> Result<EnhancedQuery> {
@@ -76,8 +86,12 @@ impl QueryProcessor {
         let temporal_context = self.extract_temporal_context(&query.text);
         let market_filters = self.extract_market_filters(&query.text, &query.filters);
 
-        // TODO: Generate embedding for the expanded query
-        let embedding = vec![0.0; 384]; // Placeholder
+        // Generate embedding for the expanded query
+        let embedding = if let Some(ref service) = self.embedding_service {
+            service.embed_text(&expanded_text).await?
+        } else {
+            vec![0.0; 384] // Fallback placeholder
+        };
 
         Ok(EnhancedQuery {
             original_text: query.text,
